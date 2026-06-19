@@ -1,0 +1,38 @@
+# ── I. PYTHON BACKEND IGNORES ──
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.history/
+
+# Virtual Environments
+venv/
+ENV/
+env/
+.venv/
+
+# Local database or dynamic profile backups
+cleaning_profiles.json
+*.db
+*.sqlite3
+
+# ── II. NODE / REACT FRONTEND IGNORES ──
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Editor settings and workspace caching files
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+.DS_Store
+
+# ── III. CRITICAL SECURITY SIGNATURES (NEVER REMOVE) ──
+.env
+.env.local
+.env.*.local
