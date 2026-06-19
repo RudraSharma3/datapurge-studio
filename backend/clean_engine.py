@@ -227,8 +227,12 @@ def process_cleaning_rules(df: pd.DataFrame, cfg: dict) -> tuple:
                             checked.add(match_val)
                             df.loc[df[col] == match_val, '_reasons'] += f"Fuzzy duplicate of [{val}] ({int(score)}% match); "
 
-    # Clean up empty strings back to safe storage fallbacks
-    df.fillna("", inplace=True)
+    # Avoids assigning string characters to numeric blocks
+    for col in df.columns:
+        if df[col].dtype in ['float64', 'float32', 'int64', 'int32']:
+            df[col] = df[col].fillna(0)  # Fill numeric columns safely with 0
+        else:
+            df[col] = df[col].fillna("") # Fill text/categorical columns safely with empty text
     
     clean_df = df[df['_reasons'] == ""]
     flagged_df = df[df['_reasons'] != ""]
