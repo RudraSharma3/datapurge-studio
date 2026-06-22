@@ -123,38 +123,76 @@ class SaveProfileConfig(BaseModel):
     config: dict
 
 def send_dynamic_notification_emails(full_name: str, user_email: str, message_content: str):
+    """Establishes a secure TLS pipeline connection to route dynamic notification mail with absolute try-catch isolation guards."""
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print("--- SMTP CREDENTIALS MISSING: SKIPPING EMAIL ROUTE ---")
+        print("--- SMTP WARNING: ENVIRONMENT CONFIG PARAMETERS ARE EMPTY or MISSING ---")
         return
+        
     try:
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        # Establish master connection securely
+        print("--- SMTP CORE: CONNECTING TO GOOGLE SMTP SERVERS... ---")
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15)
         server.starttls()
         server.login(SENDER_EMAIL, SENDER_PASSWORD)
+        print("--- SMTP CORE: SECURELY AUTHENTICATED WITH GOOGLE CORE ---")
 
-        # ── 1. USER AUTO-REPLY ──
-        user_msg = MIMEMultipart()
-        user_msg["From"] = f"DataPurge Studio <{SENDER_EMAIL}>"
-        user_msg["To"] = user_email
-        user_msg["Subject"] = "✨ We received your message! — DataPurge Studio"
-        
-        user_body = f"Hi {full_name},\n\nThank you for reaching out! We have successfully received your inquiry regarding: '{message_content}'.\n\nOur operations desk will follow up shortly.\n\nBest regards,\nDataPurge Automated Core"
-        user_msg.attach(MIMEText(user_body, "plain"))
-        server.sendmail(SENDER_EMAIL, user_email, user_msg.as_string())
-
-        # ── 2. ADMIN EMAIL NOTIFICATION ──
-        if MY_ADMIN_INBOX:
-            admin_msg = MIMEMultipart()
-            admin_msg["From"] = f"DataPurge Alert <{SENDER_EMAIL}>"
-            admin_msg["To"] = MY_ADMIN_INBOX
-            admin_msg["Subject"] = f"🚨 New Lead Captured: {full_name}"
+        # ── SUB-LOOP A: SEND AUTOMATED CONFIRMATION TO THE VISITOR ──
+        try:
+            user_msg = MIMEMultipart()
+            user_msg["From"] = f"DataPurge Studio <{SENDER_EMAIL}>"
+            user_msg["To"] = user_email
+            user_msg["Subject"] = "✨ We received your message! — DataPurge Studio"
             
-            admin_body = f"Hey Admin,\n\nA new business lead has just submitted an inquiry.\n\nDetails:\n- Name: {full_name}\n- Email: {user_email}\n- Message: {message_content}"
-            admin_msg.attach(MIMEText(admin_body, "plain"))
-            server.sendmail(SENDER_EMAIL, MY_ADMIN_INBOX, admin_msg.as_string())
+            user_body = f"""Hi {full_name},
+
+Thank you for getting in touch with the team at DataPurge Studio! We wanted to confirm that your inquiry has been successfully received.
+
+Our engineering desk is currently reviewing your message:
+----------------------------------------------------
+"{message_content}"
+----------------------------------------------------
+
+We will follow up with you shortly via this email address.
+
+Best regards,
+The DataPurge Automated Core"""
+            user_msg.attach(MIMEText(user_body, "plain"))
+            server.sendmail(SENDER_EMAIL, user_email, user_msg.as_string())
+            print(f"--- MAIL SUCCESS: Confirmation successfully delivered to visitor [{user_email}] ---")
+        except Exception as user_sub_err:
+            print(f"--- SMTP SUB-REJECTION: Google rejected visitor relay path. Details: {str(user_sub_err)} ---")
+
+        # ── SUB-LOOP B: SEND AN ALERT NOTIFICATION TO YOU (THE ADMIN) ──
+        if MY_ADMIN_INBOX:
+            try:
+                admin_msg = MIMEMultipart()
+                admin_msg["From"] = f"DataPurge Alert System <{SENDER_EMAIL}>"
+                admin_msg["To"] = MY_ADMIN_INBOX
+                admin_msg["Subject"] = f"🚨 New Lead Captured: {full_name}"
+                
+                admin_body = f"""Hey Admin,
+
+A new business lead has just submitted an inquiry form on the DataPurge landing page.
+
+Lead Metadata Details:
+- Full Name: {full_name}
+- Sender Email: {user_email}
+- Captured message contents:
+----------------------------------------------------
+{message_content}
+----------------------------------------------------
+
+This entry has already been written directly into your serverless Neon PostgreSQL instance rows."""
+                admin_msg.attach(MIMEText(admin_body, "plain"))
+                server.sendmail(SENDER_EMAIL, MY_ADMIN_INBOX, admin_msg.as_string())
+                print(f"--- MAIL SUCCESS: Alert successfully delivered to your private admin inbox [{MY_ADMIN_INBOX}] ---")
+            except Exception as admin_sub_err:
+                print(f"--- SMTP SUB-REJECTION: Google rejected admin target layout path. Details: {str(admin_sub_err)} ---")
 
         server.quit()
-    except Exception as e:
-        print(f"--- MAIL ENGINE EXCEPTION FAILURE: {str(e)} ---")
+        print("--- DYNAMIC AUTOMATION MAILS PROCESS BLOCK TERMINATED CLEANLY ---")
+    except Exception as master_connection_err:
+        print(f"--- SMTP CRITICAL EXCEPTION: Failed to authenticate with Google's servers. Error: {str(master_connection_err)} ---")
 
 @app.post("/api/auth/signup")
 def signup(payload: dict, db: Session = Depends(database.get_db)):
