@@ -123,77 +123,61 @@ class SaveProfileConfig(BaseModel):
     config: dict
 
 def send_dynamic_notification_emails(full_name: str, user_email: str, message_content: str):
-    """Establishes a secure TLS pipeline connection to route dynamic notification mail with absolute try-catch isolation guards."""
-    if not SENDER_EMAIL or not SENDER_PASSWORD:
-        print("--- SMTP WARNING: ENVIRONMENT CONFIG PARAMETERS ARE EMPTY or MISSING ---")
+    """
+    Establishes a secure, implicit Port 465 SSL pipeline connection to route dynamic 
+    notification mail. Bypasses standard Port 587 cloud firewall egress blocks.
+    """
+    # Force dynamic thread-safe scope lookup straight from the live runtime context
+    render_sender_email = os.getenv("SMTP_SENDER_EMAIL")
+    render_sender_password = os.getenv("SMTP_SENDER_PASSWORD")
+    render_admin_inbox = os.getenv("MY_ADMIN_INBOX")
+
+    if not render_sender_email or not render_sender_password:
+        print("─── SMTP CRITICAL: PIPELINE ABORTED ───")
+        print(f"DEBUG ACCESS STATES -> EMAIL FOUND: {bool(render_sender_email)}, PASSWORD FOUND: {bool(render_sender_password)}")
         return
         
     try:
-        # Establish master connection securely
-        print("--- SMTP CORE: CONNECTING TO GOOGLE SMTP SERVERS... ---")
-        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=15)
-        server.starttls()
-        server.login(SENDER_EMAIL, SENDER_PASSWORD)
-        print("--- SMTP CORE: SECURELY AUTHENTICATED WITH GOOGLE CORE ---")
+        print("─── SMTP CORE: INITIALIZING IMPLICIT PORT 465 SSL CONNECTION PIPELINE ───")
+        # Using SMTP_SSL and Port 465 natively bypasses cloud service platform outbound firewalls
+        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
+        server.login(render_sender_email, render_sender_password)
+        print("─── SMTP CORE: SECURE PRODUCTION AUTHENTICATION GRANTED BY GOOGLE ───")
 
         # ── SUB-LOOP A: SEND AUTOMATED CONFIRMATION TO THE VISITOR ──
         try:
             user_msg = MIMEMultipart()
-            user_msg["From"] = f"DataPurge Studio <{SENDER_EMAIL}>"
+            user_msg["From"] = f"DataPurge Studio <{render_sender_email}>"
             user_msg["To"] = user_email
             user_msg["Subject"] = "✨ We received your message! — DataPurge Studio"
             
-            user_body = f"""Hi {full_name},
-
-Thank you for getting in touch with the team at DataPurge Studio! We wanted to confirm that your inquiry has been successfully received.
-
-Our engineering desk is currently reviewing your message:
-----------------------------------------------------
-"{message_content}"
-----------------------------------------------------
-
-We will follow up with you shortly via this email address.
-
-Best regards,
-The DataPurge Automated Core"""
+            user_body = f"Hi {full_name},\n\nThank you for reaching out! We have successfully received your inquiry regarding: '{message_content}'.\n\nOur operations desk will follow up shortly.\n\nBest regards,\nDataPurge Automated Core"
             user_msg.attach(MIMEText(user_body, "plain"))
-            server.sendmail(SENDER_EMAIL, user_email, user_msg.as_string())
-            print(f"--- MAIL SUCCESS: Confirmation successfully delivered to visitor [{user_email}] ---")
+            server.sendmail(render_sender_email, user_email, user_msg.as_string())
+            print(f"─── MAIL SUCCESS: Confirmation delivered to visitor inbox [{user_email}] ───")
         except Exception as user_sub_err:
-            print(f"--- SMTP SUB-REJECTION: Google rejected visitor relay path. Details: {str(user_sub_err)} ---")
+            print(f"─── SMTP SUB-REJECTION (VISITOR ROUTE): {str(user_sub_err)} ───")
 
-        # ── SUB-LOOP B: SEND AN ALERT NOTIFICATION TO YOU (THE ADMIN) ──
-        if MY_ADMIN_INBOX:
+        # ── SUB-LOOP B: SEND AN ALERT NOTIFICATION TO THE ADMIN ──
+        if render_admin_inbox:
             try:
                 admin_msg = MIMEMultipart()
-                admin_msg["From"] = f"DataPurge Alert System <{SENDER_EMAIL}>"
-                admin_msg["To"] = MY_ADMIN_INBOX
+                admin_msg["From"] = f"DataPurge Alert <{render_sender_email}>"
+                admin_msg["To"] = render_admin_inbox
                 admin_msg["Subject"] = f"🚨 New Lead Captured: {full_name}"
                 
-                admin_body = f"""Hey Admin,
-
-A new business lead has just submitted an inquiry form on the DataPurge landing page.
-
-Lead Metadata Details:
-- Full Name: {full_name}
-- Sender Email: {user_email}
-- Captured message contents:
-----------------------------------------------------
-{message_content}
-----------------------------------------------------
-
-This entry has already been written directly into your serverless Neon PostgreSQL instance rows."""
+                admin_body = f"Hey Admin,\n\nA new business lead has just submitted an inquiry.\n\nDetails:\n- Name: {full_name}\n- Email: {user_email}\n- Message: {message_content}\n\nThis record is successfully written to your Neon database instance."
                 admin_msg.attach(MIMEText(admin_body, "plain"))
-                server.sendmail(SENDER_EMAIL, MY_ADMIN_INBOX, admin_msg.as_string())
-                print(f"--- MAIL SUCCESS: Alert successfully delivered to your private admin inbox [{MY_ADMIN_INBOX}] ---")
+                server.sendmail(render_sender_email, render_admin_inbox, admin_msg.as_string())
+                print(f"─── MAIL SUCCESS: Admin alert delivered to [{render_admin_inbox}] ───")
             except Exception as admin_sub_err:
-                print(f"--- SMTP SUB-REJECTION: Google rejected admin target layout path. Details: {str(admin_sub_err)} ---")
+                print(f"─── SMTP SUB-REJECTION (ADMIN ROUTE): {str(admin_sub_err)} ───")
 
         server.quit()
-        print("--- DYNAMIC AUTOMATION MAILS PROCESS BLOCK TERMINATED CLEANLY ---")
+        print("─── DYNAMIC AUTOMATION MAILS PROCESS TERMINATED CLEANLY ───")
     except Exception as master_connection_err:
-        print(f"--- SMTP CRITICAL EXCEPTION: Failed to authenticate with Google's servers. Error: {str(master_connection_err)} ---")
-
+        print(f"─── SMTP MASTER CRITICAL EXCEPTION FAILURE ───")
+        print(f"EXPLICIT SYSTEM TRACE EXCEPTION: {str(master_connection_err)}")
 @app.post("/api/auth/signup")
 def signup(payload: dict, db: Session = Depends(database.get_db)):
     username = payload.get("username", "").strip()
