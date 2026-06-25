@@ -5,6 +5,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from email_validator import validate_email, EmailNotValidError
+import httpx
 import database, models, auth
 import pandas as pd
 import io
@@ -12,13 +13,11 @@ import json
 import os
 import jwt  # Using PyJWT under the hood
 import openpyxl
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 
 from clean_engine import infer_column_types, process_cleaning_rules, calculate_health_analytics
 from dotenv import load_dotenv
 
+# Load local .env configurations cleanly into system memory
 load_dotenv()
 app = FastAPI()
 
@@ -26,7 +25,6 @@ app = FastAPI()
 models.Base.metadata.create_all(bind=database.engine)
 
 # ── DYNAMIC SYSTEM CORS POLICY OVERRIDES ──
-# Fall back to development defaults only if external origin hooks evaluate blank
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
 
 app.add_middleware(
@@ -39,12 +37,6 @@ app.add_middleware(
 
 PROFILES_FILE = "cleaning_profiles.json"
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
-
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 587
-SENDER_EMAIL = os.getenv("SMTP_SENDER_EMAIL")
-SENDER_PASSWORD = os.getenv("SMTP_SENDER_PASSWORD")
-MY_ADMIN_INBOX = os.getenv("MY_ADMIN_INBOX")
 
 class RoleChecker:
     def __init__(self, allowed_roles: list[str]):
@@ -124,60 +116,44 @@ class SaveProfileConfig(BaseModel):
 
 def send_dynamic_notification_emails(full_name: str, user_email: str, message_content: str):
     """
-    Establishes a secure, implicit Port 465 SSL pipeline connection to route dynamic 
-    notification mail. Bypasses standard Port 587 cloud firewall egress blocks.
+    Dispatches transaction notification emails via Brevo's REST API.
+    Bypasses data center SMTP port blocks by fetching keys securely from environment variables.
     """
-    # Force dynamic thread-safe scope lookup straight from the live runtime context
-    render_sender_email = os.getenv("SMTP_SENDER_EMAIL")
-    render_sender_password = os.getenv("SMTP_SENDER_PASSWORD")
-    render_admin_inbox = os.getenv("MY_ADMIN_INBOX")
+    brevo_api_key = os.getenv("BREVO_API_KEY")
+    sender_email = os.getenv("SMTP_SENDER_EMAIL")  
+    admin_inbox = os.getenv("MY_ADMIN_INBOX")      
 
-    if not render_sender_email or not render_sender_password:
-        print("─── SMTP CRITICAL: PIPELINE ABORTED ───")
-        print(f"DEBUG ACCESS STATES -> EMAIL FOUND: {bool(render_sender_email)}, PASSWORD FOUND: {bool(render_sender_password)}")
+    if not brevo_api_key or not sender_email:
+        print("─── BREVO API WARNING: CONFIGURATION VARIABLES CAPTURED EMPTY ───")
         return
-        
+
+    url = "https://api.brevo.com/v3/smtp/email"
+    headers = {
+        "accept": "application/json",
+        "api-key": brevo_api_key,
+        "content-type": "application/json"
+    }
+
+    payload = {
+        "sender": {"name": "DataPurge Studio", "email": sender_email},
+        "to": [{"email": user_email, "name": full_name}],
+        "subject": "✨ We received your message! — DataPurge Studio",
+        "textContent": f"Hi {full_name},\n\nThank you for reaching out! We have successfully received your inquiry regarding:\n'{message_content}'\n\nOur operations desk will follow up shortly.\n\nBest regards,\nDataPurge Automated Core"
+    }
+
+    if admin_inbox:
+        payload["bcc"] = [{"email": admin_inbox, "name": "System Admin"}]
+
     try:
-        print("─── SMTP CORE: INITIALIZING IMPLICIT PORT 465 SSL CONNECTION PIPELINE ───")
-        # Using SMTP_SSL and Port 465 natively bypasses cloud service platform outbound firewalls
-        server = smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15)
-        server.login(render_sender_email, render_sender_password)
-        print("─── SMTP CORE: SECURE PRODUCTION AUTHENTICATION GRANTED BY GOOGLE ───")
+        print("─── BREVO API: ROUTING TRANSACTIONAL DATA PACKS LIVE ───")
+        response = httpx.post(url, json=payload, headers=headers, timeout=10.0)
+        if response.status_code in [200, 201, 202]:
+            print(f"─── BREVO API SUCCESS: Mail payloads delivered to transactional queue [{response.status_code}] ───")
+        else:
+            print(f"─── BREVO API FAILURE: Server returned rejection code [{response.status_code}]: {response.text} ───")
+    except Exception as api_err:
+        print(f"─── BREVO SYSTEM CRITICAL ERROR: Network execution failed: {str(api_err)} ───")
 
-        # ── SUB-LOOP A: SEND AUTOMATED CONFIRMATION TO THE VISITOR ──
-        try:
-            user_msg = MIMEMultipart()
-            user_msg["From"] = f"DataPurge Studio <{render_sender_email}>"
-            user_msg["To"] = user_email
-            user_msg["Subject"] = "✨ We received your message! — DataPurge Studio"
-            
-            user_body = f"Hi {full_name},\n\nThank you for reaching out! We have successfully received your inquiry regarding: '{message_content}'.\n\nOur operations desk will follow up shortly.\n\nBest regards,\nDataPurge Automated Core"
-            user_msg.attach(MIMEText(user_body, "plain"))
-            server.sendmail(render_sender_email, user_email, user_msg.as_string())
-            print(f"─── MAIL SUCCESS: Confirmation delivered to visitor inbox [{user_email}] ───")
-        except Exception as user_sub_err:
-            print(f"─── SMTP SUB-REJECTION (VISITOR ROUTE): {str(user_sub_err)} ───")
-
-        # ── SUB-LOOP B: SEND AN ALERT NOTIFICATION TO THE ADMIN ──
-        if render_admin_inbox:
-            try:
-                admin_msg = MIMEMultipart()
-                admin_msg["From"] = f"DataPurge Alert <{render_sender_email}>"
-                admin_msg["To"] = render_admin_inbox
-                admin_msg["Subject"] = f"🚨 New Lead Captured: {full_name}"
-                
-                admin_body = f"Hey Admin,\n\nA new business lead has just submitted an inquiry.\n\nDetails:\n- Name: {full_name}\n- Email: {user_email}\n- Message: {message_content}\n\nThis record is successfully written to your Neon database instance."
-                admin_msg.attach(MIMEText(admin_body, "plain"))
-                server.sendmail(render_sender_email, render_admin_inbox, admin_msg.as_string())
-                print(f"─── MAIL SUCCESS: Admin alert delivered to [{render_admin_inbox}] ───")
-            except Exception as admin_sub_err:
-                print(f"─── SMTP SUB-REJECTION (ADMIN ROUTE): {str(admin_sub_err)} ───")
-
-        server.quit()
-        print("─── DYNAMIC AUTOMATION MAILS PROCESS TERMINATED CLEANLY ───")
-    except Exception as master_connection_err:
-        print(f"─── SMTP MASTER CRITICAL EXCEPTION FAILURE ───")
-        print(f"EXPLICIT SYSTEM TRACE EXCEPTION: {str(master_connection_err)}")
 @app.post("/api/auth/signup")
 def signup(payload: dict, db: Session = Depends(database.get_db)):
     username = payload.get("username", "").strip()
@@ -264,20 +240,15 @@ async def analyze_file(file: UploadFile = File(...)):
 
     try:
         if filename.endswith('.csv'):
-            # ── SNIFF FOR BULK BANNER/TITLE ROWS ──
-            # Read just the first two rows to evaluate structural header alignment
             preview_df = pd.read_csv(io.BytesIO(contents), nrows=2, header=None)
             
-            # Heuristic: If row 0 has only 1 non-null text value, but row 1 has multiple columns,
-            # row 0 is almost certainly a merged sheet header title block!
             skip_rows = 0
             if len(preview_df) > 1:
                 row0_valid_count = preview_df.iloc[0].dropna().astype(str).str.strip().replace('', None).notna().sum()
                 row1_valid_count = preview_df.iloc[1].dropna().astype(str).str.strip().replace('', None).notna().sum()
                 if row0_valid_count == 1 and row1_valid_count > 1:
-                    skip_rows = 1  # Tell pandas to jump directly over the title row banner
+                    skip_rows = 1  
 
-            # Read the full dataframe with the verified row offsets
             df = pd.read_csv(io.BytesIO(contents), skiprows=skip_rows)
             df['_row_id'] = range(len(df))
             SESSION_DATA["df"] = df.copy()
@@ -298,7 +269,6 @@ async def analyze_file(file: UploadFile = File(...)):
             SESSION_DATA["all_sheets"] = {}
             
             for sheet_name in xl.sheet_names:
-                # Read structural layout bounds for multi-sheet tracking
                 preview_df = xl.parse(sheet_name, nrows=2, header=None)
                 
                 skip_rows = 0
@@ -308,7 +278,6 @@ async def analyze_file(file: UploadFile = File(...)):
                     if row0_valid_count == 1 and row1_valid_count > 1:
                         skip_rows = 1
 
-                # Parse the sheet data dropping the title row index footprint if present
                 sheet_df = xl.parse(sheet_name, skiprows=skip_rows)
                 sheet_df['_row_id'] = range(len(sheet_df))
                 
@@ -466,19 +435,11 @@ async def download_file(format: str, audit: bool = False):
             clean_df = SESSION_DATA["clean_sheets_cache"][sheet_name]
             flagged_df = SESSION_DATA["flagged_sheets_cache"][sheet_name]
             
-            # ── ARCHITECTURAL CORRECTION FOR OPENPYXL ROW RE-INDEXING DRAGS ──
-            # Calculate explicitly which matching index items are destined for dropping
             rows_to_drop_set = set()
-            
             for idx, row in flagged_df.iterrows():
                 if (audit and row['_row_id'] in rescued_ids) or (not audit and row['_row_id'] not in rescued_ids):
                     rows_to_drop_set.add(idx + 2)
-                    
-            if not audit:
-                for idx, row in clean_df.iterrows():
-                    pass # Clean records are preserved intact here
 
-            # Delete rows backwards to cleanly sidestep coordinate reference drifts
             for excel_row_idx in sorted(list(rows_to_drop_set), reverse=True):
                 ws.delete_rows(excel_row_idx, 1)
                 
@@ -490,7 +451,6 @@ async def download_file(format: str, audit: bool = False):
             headers={"Content-Disposition": f"attachment; filename={prefix}_{SESSION_DATA['filename']}.xlsx"}
         )
 
-    # Flat CSV Router Framework Fallback logic
     if audit:
         final_df = SESSION_DATA["flagged_df"].copy()
         final_df = final_df[~final_df['_row_id'].isin(rescued_ids)].copy()
