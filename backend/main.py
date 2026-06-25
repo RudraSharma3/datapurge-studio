@@ -264,26 +264,52 @@ async def analyze_file(file: UploadFile = File(...)):
 
     try:
         if filename.endswith('.csv'):
-            df = pd.read_csv(io.BytesIO(contents))
+            # ── SNIFF FOR BULK BANNER/TITLE ROWS ──
+            # Read just the first two rows to evaluate structural header alignment
+            preview_df = pd.read_csv(io.BytesIO(contents), nrows=2, header=None)
+            
+            # Heuristic: If row 0 has only 1 non-null text value, but row 1 has multiple columns,
+            # row 0 is almost certainly a merged sheet header title block!
+            skip_rows = 0
+            if len(preview_df) > 1:
+                row0_valid_count = preview_df.iloc[0].dropna().astype(str).str.strip().replace('', None).notna().sum()
+                row1_valid_count = preview_df.iloc[1].dropna().astype(str).str.strip().replace('', None).notna().sum()
+                if row0_valid_count == 1 and row1_valid_count > 1:
+                    skip_rows = 1  # Tell pandas to jump directly over the title row banner
+
+            # Read the full dataframe with the verified row offsets
+            df = pd.read_csv(io.BytesIO(contents), skiprows=skip_rows)
             df['_row_id'] = range(len(df))
             SESSION_DATA["df"] = df.copy()
             SESSION_DATA["file_type"] = "csv"
             
             SESSION_DATA["sheet_metadata"] = {
                 "Default_Sheet": {
-                    "headers": [c for c in df.columns if c != '_row_id'],
+                    "headers": [c for c in df.columns if c != '_row_id' and not str(c).startswith('Unnamed:')],
                     "colTypes": infer_column_types(df),
                     "rowCount": len(df),
                     "rows": df.head(5).astype(object).where(pd.notnull(df.head(5)), None).to_dict(orient="records")
                 }
             }
+            
         elif filename.endswith('.xlsx') or filename.endswith('.xls'):
             xl = pd.ExcelFile(io.BytesIO(contents))
             SESSION_DATA["file_type"] = "excel"
             SESSION_DATA["all_sheets"] = {}
             
             for sheet_name in xl.sheet_names:
-                sheet_df = xl.parse(sheet_name)
+                # Read structural layout bounds for multi-sheet tracking
+                preview_df = xl.parse(sheet_name, nrows=2, header=None)
+                
+                skip_rows = 0
+                if len(preview_df) > 1:
+                    row0_valid_count = preview_df.iloc[0].dropna().astype(str).str.strip().replace('', None).notna().sum()
+                    row1_valid_count = preview_df.iloc[1].dropna().astype(str).str.strip().replace('', None).notna().sum()
+                    if row0_valid_count == 1 and row1_valid_count > 1:
+                        skip_rows = 1
+
+                # Parse the sheet data dropping the title row index footprint if present
+                sheet_df = xl.parse(sheet_name, skiprows=skip_rows)
                 sheet_df['_row_id'] = range(len(sheet_df))
                 
                 for col in sheet_df.columns:
@@ -295,7 +321,7 @@ async def analyze_file(file: UploadFile = File(...)):
                 
                 SESSION_DATA["all_sheets"][sheet_name] = sheet_df
                 SESSION_DATA["sheet_metadata"][sheet_name] = {
-                    "headers": [c for c in sheet_df.columns if c != '_row_id'],
+                    "headers": [c for c in sheet_df.columns if c != '_row_id' and not str(c).startswith('Unnamed:')],
                     "colTypes": infer_column_types(sheet_df),
                     "rowCount": len(sheet_df),
                     "rows": sheet_df.head(5).astype(object).where(pd.notnull(sheet_df.head(5)), None).to_dict(orient="records")
